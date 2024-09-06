@@ -2,7 +2,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import col, delete, func, select
+from sqlmodel import Session, col, delete, func, select
 
 from app import crud
 from app.api.deps import (
@@ -12,6 +12,7 @@ from app.api.deps import (
 )
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password
+from app.core.transaction_manager import handle_transaction
 from app.models import (
     Item,
     Message,
@@ -89,12 +90,15 @@ def update_user_me(
             raise HTTPException(
                 status_code=409, detail="User with this email already exists"
             )
-    user_data = user_in.model_dump(exclude_unset=True)
-    current_user.sqlmodel_update(user_data)
-    session.add(current_user)
-    session.commit()
-    session.refresh(current_user)
-    return current_user
+
+    def update_user_operation(tx_session: Session) -> User:
+        user_data = user_in.model_dump(exclude_unset=True)
+        current_user.sqlmodel_update(user_data)
+        tx_session.add(current_user)
+        return current_user
+
+    updated_user = handle_transaction(session, [update_user_operation])[0]
+    return updated_user
 
 
 @router.patch("/me/password", response_model=Message)
@@ -112,8 +116,9 @@ def update_password_me(
         )
     hashed_password = get_password_hash(body.new_password)
     current_user.hashed_password = hashed_password
-    session.add(current_user)
-    session.commit()
+    with session.begin():
+        session.add(current_user)
+        session.flush()
     return Message(message="Password updated successfully")
 
 
@@ -134,10 +139,11 @@ def delete_user_me(session: SessionDep, current_user: CurrentUser) -> Any:
         raise HTTPException(
             status_code=403, detail="Super users are not allowed to delete themselves"
         )
-    statement = delete(Item).where(col(Item.owner_id) == current_user.id)
-    session.exec(statement)  # type: ignore
-    session.delete(current_user)
-    session.commit()
+    with session.begin():
+        statement = delete(Item).where(col(Item.owner_id) == current_user.id)
+        session.exec(statement)  # type: ignore
+        session.delete(current_user)
+        session.flush()
     return Message(message="User deleted successfully")
 
 
@@ -221,8 +227,9 @@ def delete_user(
         raise HTTPException(
             status_code=403, detail="Super users are not allowed to delete themselves"
         )
-    statement = delete(Item).where(col(Item.owner_id) == user_id)
-    session.exec(statement)  # type: ignore
-    session.delete(user)
-    session.commit()
+    with session.begin():
+        statement = delete(Item).where(col(Item.owner_id) == user_id)
+        session.exec(statement)  # type: ignore
+        session.delete(user)
+        session.flush()
     return Message(message="User deleted successfully")

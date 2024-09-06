@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.security import verify_password
 from app.models import User, UserCreate
 from app.tests.utils.utils import random_email, random_lower_string
+from app.core.transaction_manager import handle_transaction
 
 
 def test_get_users_superuser_me(
@@ -51,7 +52,11 @@ def test_create_user_new_email(
         )
         assert 200 <= r.status_code < 300
         created_user = r.json()
-        user = crud.get_user_by_email(session=db, email=username)
+
+        def get_user_operation(tx_session: Session) -> User:
+            return crud.get_user_by_email(session=tx_session, email=username)
+
+        user = handle_transaction(db, [get_user_operation])[0]
         assert user
         assert user.email == created_user["email"]
 
